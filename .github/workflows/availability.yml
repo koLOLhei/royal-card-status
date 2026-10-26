@@ -1,0 +1,53 @@
+name: Availability
+on:
+  schedule:
+    - cron: '7,17,27,37,47,57 * * * *'
+    - cron: '37 4 1 * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: availability
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - id: endpoints
+        run: python3 check.py
+      - name: Open an incident, or close it after recovery
+        if: always() && (steps.endpoints.outcome == 'success' || steps.endpoints.outcome == 'failure')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RESULT: ${{ steps.endpoints.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash
+        run: |
+          issue=$(gh issue list --state open --search '"Availability alert" in:title' --json number --jq '.[0].number // empty')
+          if [ "$RESULT" = failure ] && [ -z "$issue" ]; then
+            gh issue create --title 'Availability alert' --body "A public endpoint failed three checks. Details: $RUN_URL"
+          elif [ "$RESULT" = success ] && [ -n "$issue" ]; then
+            gh issue close "$issue" --comment "Both public endpoints are responding normally again. Details: $RUN_URL"
+          fi
+  keep-schedule-active:
+    if: github.event.schedule == '37 4 1 * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Record monthly maintenance
+        run: |
+          date -u +%Y-%m-%d > MAINTENANCE.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add MAINTENANCE.txt
+          git diff --cached --quiet || git commit -m 'Record scheduled monitor maintenance'
+          git push
